@@ -394,6 +394,9 @@ class ActiveQuery extends Query implements ActiveQueryInterface
      */
     public function joinWith($with, $eagerLoading = true, $joinType = 'LEFT JOIN')
     {
+$this->joinWith[] = [(array) $with, $eagerLoading, $joinType];
+return $this;
+
         $relations = [];
         foreach ((array) $with as $name => $callback) {
             if (is_int($name)) {
@@ -401,18 +404,18 @@ class ActiveQuery extends Query implements ActiveQueryInterface
                 $callback = null;
             }
 
-            if (preg_match('/^(.*?)(?:\s+AS\s+|\s+)(\w+)$/i', $name, $matches)) {
-                // relation is defined with an alias, adjust callback to apply alias
-                list(, $relation, $alias) = $matches;
-                $name = $relation;
-                $callback = function($query) use ($callback, $alias) {
-                    /** @var $query ActiveQuery */
-                    $query->alias($alias);
-                    if ($callback !== null) {
-                        call_user_func($callback, $query);
-                    }
-                };
-            }
+//             if (preg_match('/^(.*?)(?:\s+AS\s+|\s+)(\w+)$/i', $name, $matches)) {
+//                 // relation is defined with an alias, adjust callback to apply alias
+//                 list(, $relation, $alias) = $matches;
+//                 $name = $relation;
+//                 $callback = function($query) use ($callback, $alias) {
+//                     /** @var $query ActiveQuery */
+//                     $query->alias($alias);
+//                     if ($callback !== null) {
+//                         call_user_func($callback, $query);
+//                     }
+//                 };
+//             }
 
             if ($callback === null) {
                 $relations[] = $name;
@@ -502,9 +505,18 @@ class ActiveQuery extends Query implements ActiveQueryInterface
             while (($pos = strpos($name, '.')) !== false) {
                 $childName = substr($name, $pos + 1);
                 $name = substr($name, 0, $pos);
+
+//                 $alias = null;
+//                 if (preg_match('/^(.*?)(?:\s+AS\s+|\s+)(\w+)$/i', $name, $matches)) {
+//                     // relation is defined with an alias, adjust $name and extract alias
+//                     list(, $name, $alias) = $matches;
+//                 }
+
                 $fullName = $prefix === '' ? $name : "$prefix.$name";
                 if (!isset($relations[$fullName])) {
                     $relations[$fullName] = $relation = $primaryModel->getRelation($name);
+//                     if (!empty($alias))
+//                         $relation->alias( $alias );
                     $this->joinWithRelation($parent, $relation, $this->getJoinType($joinType, $fullName));
                 } else {
                     $relation = $relations[$fullName];
@@ -576,6 +588,32 @@ class ActiveQuery extends Query implements ActiveQueryInterface
     }
 
     /**
+     * Replace the key string ==relationAlias== by aliasName into given conditions
+     * @param string|array $condition the given conditions
+     * @param string $aliasName
+     */
+    private function replaceRelationAlias( $condition, $aliasName )
+    {
+        if (is_int($condition)) {
+            return $condition;
+        } elseif (is_string($condition)) {
+            return str_replace('==relationAlias==', $aliasName, $condition);
+        } elseif (is_array($condition)) {
+            $conditionNew = [];
+            foreach ($condition as $key => $value) {
+                unset($condition[$key]);
+                $key    = self::replaceRelationAlias($key,   $aliasName);
+                $value  = self::replaceRelationAlias($value, $aliasName);
+                $conditionNew[$key] = $value;
+            }
+            $condition = $conditionNew;
+        } elseif ($condition instanceof \yii\db\Expression) {
+            $condition->expression = self::replaceRelationAlias($condition->expression, $aliasName);
+        }
+        return $condition;
+    }
+
+    /**
      * Joins a parent query with a child query.
      * The current query object will be modified accordingly.
      * @param ActiveQuery $parent
@@ -601,18 +639,22 @@ class ActiveQuery extends Query implements ActiveQueryInterface
         list ($parentTable, $parentAlias) = $this->getQueryTableName($parent);
         list ($childTable, $childAlias) = $this->getQueryTableName($child);
 
-        if (!empty($child->link)) {
+        $child->on = $this->replaceRelationAlias( $child->on, $childAlias );
 
-            if (strpos($parentAlias, '{{') === false) {
-                $parentAlias = '{{' . $parentAlias . '}}';
+        if (!empty($child->link)) {
+            //automatically quote table aliasName only for the link part (not sure why?)
+            $linkParentAlias = $parentAlias;
+            if (strpos($linkParentAlias, '{{') === false) {
+                $linkParentAlias = '{{' . $linkParentAlias . '}}';
             }
-            if (strpos($childAlias, '{{') === false) {
-                $childAlias = '{{' . $childAlias . '}}';
+            $linkChildAlias = $childAlias;
+            if (strpos($linkChildAlias, '{{') === false) {
+                $linkChildAlias = '{{' . $linkChildAlias . '}}';
             }
 
             $on = [];
             foreach ($child->link as $childColumn => $parentColumn) {
-                $on[] = "$parentAlias.[[$parentColumn]] = $childAlias.[[$childColumn]]";
+                $on[] = "$linkParentAlias.[[$parentColumn]] = $linkChildAlias.[[$childColumn]]";
             }
             $on = implode(' AND ', $on);
             if (!empty($child->on)) {
@@ -624,28 +666,28 @@ class ActiveQuery extends Query implements ActiveQueryInterface
         $this->join($joinType, empty($child->from) ? $childTable : $child->from, $on);
 
         if (!empty($child->where)) {
-            $this->andWhere($child->where);
+            $this->andWhere( $this->replaceRelationAlias( $child->where, $childAlias ) );
         }
         if (!empty($child->having)) {
-            $this->andHaving($child->having);
+            $this->andHaving( $this->replaceRelationAlias( $child->having, $childAlias ) );
         }
         if (!empty($child->orderBy)) {
-            $this->addOrderBy($child->orderBy);
+            $this->addOrderBy( $this->replaceRelationAlias( $child->orderBy, $childAlias ) );
         }
         if (!empty($child->groupBy)) {
-            $this->addGroupBy($child->groupBy);
+            $this->addGroupBy( $this->replaceRelationAlias( $child->groupBy, $childAlias ) );
         }
         if (!empty($child->params)) {
             $this->addParams($child->params);
         }
         if (!empty($child->join)) {
             foreach ($child->join as $join) {
-                $this->join[] = $join;
+                $this->join[] = $this->replaceRelationAlias( $join, $childAlias );
             }
         }
         if (!empty($child->union)) {
             foreach ($child->union as $union) {
-                $this->union[] = $union;
+                $this->union[] = $this->replaceRelationAlias( $union, $childAlias );
             }
         }
     }
