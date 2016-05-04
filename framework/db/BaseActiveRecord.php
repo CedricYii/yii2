@@ -387,6 +387,32 @@ abstract class BaseActiveRecord extends Model implements ActiveRecordInterface
         return $query;
     }
 
+    public function relationNameAlias( $name )
+    {
+        static $_names;
+
+        if (isset($_names[ $name ])) {
+            return $_names[ $name ];
+        }
+
+        $alias = null;
+        if (preg_match('/^(.*?)(?:\s+AS\s+|\s+)(\w+)$/i', $name, $matches)) {
+            // relation is defined with an alias, adjust $name and extract alias
+            list(, $name, $alias) = $matches;
+        }
+        return $_names[ $name ] = [ $name, $alias ];
+    }
+
+    public function relationAlias( $name )
+    {
+        return $this->relationNameAlias( $name )[0];
+    }
+
+    public function relationName( $name )
+    {
+        return $this->relationNameAlias( $name )[1];
+    }
+
     /**
      * Populates the named relation with the related records.
      * Note that this method does not check if the relation exists or not.
@@ -395,7 +421,7 @@ abstract class BaseActiveRecord extends Model implements ActiveRecordInterface
      */
     public function populateRelation($name, $records)
     {
-        $this->_related[$name] = $records;
+        $this->_related[ $this->relationAlias($name) ] = $records;
     }
 
     /**
@@ -1137,6 +1163,9 @@ abstract class BaseActiveRecord extends Model implements ActiveRecordInterface
      */
     public function getRelation($name, $throwException = true)
     {
+        //extract alias from relation's name (example: $name = 'customer c')
+        list($name, $alias) = $this->relationNameAlias( $name );
+
         $getter = 'get' . $name;
         try {
             // the relation could be defined in a behavior
@@ -1167,6 +1196,11 @@ abstract class BaseActiveRecord extends Model implements ActiveRecordInterface
                     return null;
                 }
             }
+        }
+
+        //define alias of the relation
+        if (!empty($alias)) {
+            $relation->alias( $alias );
         }
 
         return $relation;
